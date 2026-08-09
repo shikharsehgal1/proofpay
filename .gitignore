@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Runtime / data
+data/
+tmp/
+.sandbox/
+*.log
+coverage/
+uploads/
+media/
+
+# Docker volumes
+postgres-data/
+redis-data/
+
+# Eval artifacts (may be large)
+artifacts/
+workspaces/
