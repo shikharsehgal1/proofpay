@@ -92,30 +92,41 @@ async def x_callback(
         )
         db.add(user)
         await db.flush()
+        existing_oauth = None
     else:
         user.x_username = username
         user.display_name = display
         user.profile_image_url = avatar
+        # Avoid async lazy-load of relationship (MissingGreenlet)
+        existing_oauth = user.__dict__.get("oauth")
+        if existing_oauth is None:
+            ot = await db.execute(select(OAuthToken).where(OAuthToken.user_id == user.id))
+            existing_oauth = ot.scalar_one_or_none()
 
-    if user.oauth:
-        user.oauth.access_token_enc = encrypt_token(access)
-        user.oauth.refresh_token_enc = encrypt_token(refresh) if refresh else None
-        user.oauth.scope = scope
-        user.oauth.expires_at = expires_at
+    if existing_oauth is not None:
+        existing_oauth.access_token_enc = encrypt_token(access)
+        existing_oauth.refresh_token_enc = encrypt_token(refresh) if refresh else None
+        existing_oauth.scope = scope or ""
+        existing_oauth.expires_at = expires_at
     else:
         db.add(
             OAuthToken(
                 user_id=user.id,
                 access_token_enc=encrypt_token(access),
                 refresh_token_enc=encrypt_token(refresh) if refresh else None,
-                scope=scope,
+                scope=scope or "",
                 expires_at=expires_at,
             )
         )
 
     await db.commit()
     redirect_to = st.redirect_after or "/"
-    resp = RedirectResponse(f"{settings.app_base_url}{redirect_to if redirect_to.startswith('/') else '/'}")
+    if not redirect_to.startswith("/"):
+        redirect_to = "/"
+    resp = RedirectResponse(
+        url=f"{settings.app_base_url}{redirect_to}",
+        status_code=302,
+    )
     set_session(resp, user.id)
     return resp
 

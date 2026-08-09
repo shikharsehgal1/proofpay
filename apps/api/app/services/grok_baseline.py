@@ -87,6 +87,31 @@ def _copy_seed(seed: Path, dest: Path) -> None:
 
 
 def _build_optimize_prompt(natural_language: str, seed_path: Path) -> str:
+    # Detect searchlab vs ranklab seeds
+    if (seed_path / "searchlab" / "ranker.py").exists():
+        return textwrap.dedent(
+            f"""
+            You are generating the **Grok Baseline V0** for a ProofPay multi-metric ranking bounty.
+
+            Goal: build the best production-quality ranker you can. Do NOT sabotage quality.
+
+            Repository root: {seed_path}
+
+            Bounty:
+            {natural_language}
+
+            Requirements:
+            1. Improve `searchlab/ranker.py` function `rank(query, documents) -> list[str]`.
+            2. Maximize composite: 100*(0.7*NDCG@10 + 0.3*MRR) - 5.0*log10(1+p95_ms).
+            3. Do not modify tests/, bench/, or eval assets.
+            4. Prefer BM25 / field-weighted TF-IDF (title > tags > body). Keep it fast.
+            5. Write BASELINE.md describing your approach.
+            6. Keep deterministic behavior. No hardcoding of queries.
+
+            Edit existing files only. When done, stop.
+            """
+        ).strip()
+
     return textwrap.dedent(
         f"""
         You are generating the **Grok Baseline V0** for a ProofPay bounty.
@@ -120,20 +145,20 @@ async def generate_via_xai_api(*, seed_path: Path, dest: Path, natural_language:
     prompt = _build_optimize_prompt(natural_language, seed_path)
     _copy_seed(seed_path, dest)
 
-    rank_path = dest / "ranklab" / "rank.py"
+    is_search = (dest / "searchlab" / "ranker.py").exists()
+    rank_path = dest / ("searchlab/ranker.py" if is_search else "ranklab/rank.py")
     original = rank_path.read_text(encoding="utf-8") if rank_path.exists() else ""
+    rel = "searchlab/ranker.py" if is_search else "ranklab/rank.py"
 
     system = (
-        "You are Grok optimizing a Python module for a ProofPay baseline. "
-        "Return ONLY the full contents of ranklab/rank.py as a Python source file. "
-        "No markdown fences."
+        "You are Grok producing a ProofPay baseline implementation. "
+        f"Return ONLY the full contents of {rel} as Python source. No markdown fences."
     )
     user = (
-        f"{prompt}\n\n--- CURRENT ranklab/rank.py ---\n{original}\n--- END ---\n"
-        "Rewrite the full file with your best optimization."
+        f"{prompt}\n\n--- CURRENT {rel} ---\n{original}\n--- END ---\n"
+        "Rewrite the full file with your best implementation."
     )
     content = await xai_client.chat_text(system, user, temperature=0.2)
-    # strip fences if model ignores instruction
     content = re.sub(r"^```(?:python)?\n?", "", content.strip())
     content = re.sub(r"\n?```$", "", content.strip())
     if "def rank" not in content:
@@ -148,6 +173,7 @@ async def generate_via_xai_api(*, seed_path: Path, dest: Path, natural_language:
             generation_metadata={"raw": content[:2000]},
             error="Model did not return a valid rank() implementation",
         )
+    rank_path.parent.mkdir(parents=True, exist_ok=True)
     rank_path.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
     (dest / "BASELINE.md").write_text(
         f"# Grok Baseline V0\n\nGenerated via xAI API (`{model}`).\n\nPrompt version: {PROMPT_VERSION}\n",
@@ -230,19 +256,26 @@ def generate_via_grok_cli(*, seed_path: Path, dest: Path, natural_language: str)
             error="Grok CLI timed out",
         )
 
-    rank_py = dest / "ranklab" / "rank.py"
+    is_search = (dest / "searchlab" / "ranker.py").exists()
+    rel = "searchlab/ranker.py" if is_search else "ranklab/rank.py"
+    rank_py = dest / rel
     changed = rank_py.exists() and "def rank" in rank_py.read_text(encoding="utf-8", errors="ignore")
-    # Detect meaningful edit vs seed
-    seed_rank = (seed_path / "ranklab" / "rank.py").read_text(encoding="utf-8", errors="ignore")
+    seed_rank = (seed_path / rel).read_text(encoding="utf-8", errors="ignore") if (seed_path / rel).exists() else ""
     new_rank = rank_py.read_text(encoding="utf-8", errors="ignore") if rank_py.exists() else ""
     if not changed or new_rank.strip() == seed_rank.strip():
-        # One more attempt with a tighter edit prompt (still real Grok Build)
-        tight = (
-            "Only edit ranklab/rank.py: replace the selection-sort implementation of rank() "
-            "with the best production-quality version you can (e.g. sorted(items, reverse=True) "
-            "if that preserves semantics). Keep rank_scores. Write BASELINE.md with one sentence "
-            "describing your approach. Do not modify tests."
-        )
+        if is_search:
+            tight = (
+                f"Only edit {rel}: implement a strong TF-IDF or BM25-style rank(query, documents) "
+                "that returns document ids best-first. Maximize NDCG and MRR. "
+                "Write BASELINE.md with one sentence. Do not modify tests."
+            )
+        else:
+            tight = (
+                "Only edit ranklab/rank.py: replace the selection-sort implementation of rank() "
+                "with the best production-quality version you can (e.g. sorted(items, reverse=True) "
+                "if that preserves semantics). Keep rank_scores. Write BASELINE.md with one sentence "
+                "describing your approach. Do not modify tests."
+            )
         proc2 = _run(
             [
                 cli,
@@ -370,6 +403,7 @@ def build_eval_vector(metrics: dict[str, Any], *, hard_gates_ok: bool) -> dict[s
     vis_t = metrics.get("visible_tests_total") or 0
     hid_p = metrics.get("hidden_tests_passed") or 0
     hid_t = metrics.get("hidden_tests_total") or 0
+    cand = metrics.get("candidate_metrics") or {}
     return {
         "hard_gates_ok": hard_gates_ok,
         "functionality": {
@@ -381,7 +415,13 @@ def build_eval_vector(metrics: dict[str, Any], *, hard_gates_ok: bool) -> dict[s
             "hidden_rate": (hid_p / hid_t) if hid_t else None,
         },
         "performance": {
-            "latency_ms": metrics.get("candidate_latency_ms"),
+            # primary_score: composite when present, else latency (lower better)
+            "primary_score": cand.get("composite_score", metrics.get("candidate_latency_ms")),
+            "higher_is_better": bool(cand.get("higher_is_better") or cand.get("metric_key") == "composite_score"),
+            "composite_score": cand.get("composite_score"),
+            "ndcg_at_10": cand.get("ndcg_at_10"),
+            "mrr": cand.get("mrr"),
+            "latency_ms": metrics.get("candidate_latency_ms") or cand.get("p95_ms"),
             "seed_latency_ms": metrics.get("baseline_latency_ms"),
             "improvement_vs_seed_pct": metrics.get("improvement_pct"),
             "reproduction_latency_ms": metrics.get("reproduction_latency_ms"),
@@ -391,6 +431,7 @@ def build_eval_vector(metrics: dict[str, Any], *, hard_gates_ok: bool) -> dict[s
             "ok": metrics.get("integrity_ok"),
             "findings": metrics.get("integrity_findings"),
         },
+        "raw_candidate_metrics": cand,
     }
 
 
@@ -401,20 +442,35 @@ def compare_to_grok(
     min_improvement_over_grok_pct: float = 5.0,
 ) -> dict[str, Any]:
     """
-    Deterministic comparison: challenger must pass hard gates and beat Grok performance.
-    Does not invent scores.
+    Deterministic comparison against Grok.
+    Prefers multi-metric composite_score (higher better) when present;
+    otherwise compares latency (lower better).
     """
     ch_hard = bool(challenger_vector.get("hard_gates_ok"))
     gk_hard = bool(grok_vector.get("hard_gates_ok"))
-    ch_lat = (challenger_vector.get("performance") or {}).get("latency_ms")
-    gk_lat = (grok_vector.get("performance") or {}).get("latency_ms")
+    ch_perf = challenger_vector.get("performance") or {}
+    gk_perf = grok_vector.get("performance") or {}
+
+    ch_score = ch_perf.get("composite_score")
+    gk_score = gk_perf.get("composite_score")
+    higher = bool(ch_perf.get("higher_is_better") or gk_perf.get("higher_is_better") or ch_score is not None)
+
+    ch_lat = ch_perf.get("latency_ms")
+    gk_lat = gk_perf.get("latency_ms")
 
     delta: dict[str, Any] = {
         "challenger_hard_gates_ok": ch_hard,
         "grok_hard_gates_ok": gk_hard,
+        "challenger_composite": ch_score,
+        "grok_composite": gk_score,
+        "challenger_ndcg": ch_perf.get("ndcg_at_10"),
+        "grok_ndcg": gk_perf.get("ndcg_at_10"),
+        "challenger_mrr": ch_perf.get("mrr"),
+        "grok_mrr": gk_perf.get("mrr"),
         "challenger_latency_ms": ch_lat,
         "grok_latency_ms": gk_lat,
         "min_improvement_over_grok_pct": min_improvement_over_grok_pct,
+        "mode": "composite" if (ch_score is not None and gk_score is not None) else "latency",
     }
 
     if not ch_hard:
@@ -425,22 +481,47 @@ def compare_to_grok(
             "delta": delta,
         }
     if not gk_hard:
-        # Grok failed gates — any valid challenger beats it
         return {
             "beats_grok": True,
             "verdict": "VERIFIED_IMPROVEMENT_OVER_GROK",
             "reason": "Grok baseline failed hard gates; valid challenger wins",
             "delta": delta,
         }
-    if ch_lat is None or gk_lat is None or gk_lat <= 0:
+
+    # Multi-metric composite path (SearchLab etc.)
+    if ch_score is not None and gk_score is not None and float(gk_score) != 0:
+        improvement_over_grok = ((float(ch_score) - float(gk_score)) / abs(float(gk_score))) * 100.0
+        delta["improvement_over_grok_pct"] = improvement_over_grok
+        if improvement_over_grok >= min_improvement_over_grok_pct:
+            return {
+                "beats_grok": True,
+                "verdict": "VERIFIED_IMPROVEMENT_OVER_GROK",
+                "reason": (
+                    f"Composite {ch_score} beats Grok {gk_score} "
+                    f"by {improvement_over_grok:.2f}% (≥{min_improvement_over_grok_pct}%)"
+                ),
+                "delta": delta,
+            }
         return {
             "beats_grok": False,
-            "verdict": "INCONCLUSIVE",
-            "reason": "Missing latency metrics for comparison",
+            "verdict": "GROK_REMAINS_CHAMPION",
+            "reason": (
+                f"Composite {ch_score} vs Grok {gk_score} "
+                f"(Δ {improvement_over_grok:.2f}% < {min_improvement_over_grok_pct}%)"
+            ),
             "delta": delta,
         }
 
-    improvement_over_grok = ((gk_lat - ch_lat) / gk_lat) * 100.0
+    # Latency path (lower better)
+    if ch_lat is None or gk_lat is None or float(gk_lat) <= 0:
+        return {
+            "beats_grok": False,
+            "verdict": "INCONCLUSIVE",
+            "reason": "Missing comparable metrics for comparison",
+            "delta": delta,
+        }
+
+    improvement_over_grok = ((float(gk_lat) - float(ch_lat)) / float(gk_lat)) * 100.0
     delta["improvement_over_grok_pct"] = improvement_over_grok
 
     if improvement_over_grok >= min_improvement_over_grok_pct:

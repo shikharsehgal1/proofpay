@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.db import Base, engine
 from app.db_migrate import ensure_schema
-from app.routes import auth, bounties, system, webhooks
+from app.routes import auth, bounties, demo, system, webhooks
 
 
 @asynccontextmanager
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
     app.include_router(bounties.router, prefix="/api")
+    app.include_router(demo.router, prefix="/api")
     app.include_router(webhooks.router, prefix="/api")
 
     artifacts = Path(settings.artifacts_dir)

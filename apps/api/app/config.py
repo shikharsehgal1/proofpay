@@ -14,11 +14,11 @@ class Settings(BaseSettings):
 
     app_name: str = "ProofPay"
     app_env: str = "development"
-    app_base_url: str = "http://localhost:3000"
-    api_base_url: str = "http://localhost:8000"
+    app_base_url: str = "https://proofpay-web.fly.dev"
+    api_base_url: str = "https://proofpay-api.fly.dev"
     secret_key: str = "dev-only-change-me"
     token_encryption_key: str = ""
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = "https://proofpay-web.fly.dev,http://localhost:3000"
 
     database_url: str = "postgresql+asyncpg://proofpay:proofpay@localhost:5432/proofpay"
     database_url_sync: str = "postgresql://proofpay:proofpay@localhost:5432/proofpay"
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     x_bearer_token: str = ""
     x_api_key: str = ""
     x_api_secret: str = ""
-    x_oauth_callback_url: str = "http://localhost:3000/api/auth/x/callback"
+    x_oauth_callback_url: str = "https://proofpay-web.fly.dev/api/auth/x/callback"
     x_oauth_scopes: str = "tweet.read tweet.write users.read offline.access media.write"
     x_webhook_url: str = ""
     x_webhook_crc_secret: str = ""

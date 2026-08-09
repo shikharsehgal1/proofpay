@@ -521,13 +521,27 @@ async def evaluate_submission(
 
         # Persist artifacts
         (artifact_dir / "events.json").write_text(json.dumps(events, indent=2, default=str))
+        # Prefer p95 latency fields for latency_ms display even when metric_key is composite
+        cand_p95 = float(
+            candidate_metrics.get("p95_ms")
+            or candidate_metrics.get("latency_ms")
+            or (cand_lat if not bench.get("higher_is_better") else 0)
+            or 0
+        )
+        base_p95 = float(
+            baseline_metrics.get("p95_ms")
+            or baseline_metrics.get("latency_ms")
+            or (base_lat if not bench.get("higher_is_better") else 0)
+            or 0
+        )
+        # When metric_key is composite_score, store that in improvement calc values
         summary = {
             "visible_tests_passed": vis_passed,
             "visible_tests_total": vis_total,
             "hidden_tests_passed": hid_passed,
             "hidden_tests_total": hid_total,
-            "baseline_latency_ms": base_lat or None,
-            "candidate_latency_ms": cand_lat or None,
+            "baseline_latency_ms": base_p95 or base_lat or None,
+            "candidate_latency_ms": cand_p95 or cand_lat or None,
             "improvement_pct": improvement,
             "reproduction_latency_ms": repro_lat or None,
             "reproduction_improvement_pct": repro_imp,
@@ -536,6 +550,9 @@ async def evaluate_submission(
             "baseline_metrics": baseline_metrics,
             "candidate_metrics": candidate_metrics,
             "repro_metrics": repro_metrics,
+            "primary_metric_key": metric_key,
+            "primary_seed": base_lat or None,
+            "primary_candidate": cand_lat or None,
         }
         (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
 
@@ -574,8 +591,13 @@ def _docker_image_exists(image: str) -> bool:
 
 def ensure_evaluator_image() -> bool:
     """Build local evaluator image if Dockerfile present."""
-    root = Path(__file__).resolve().parents[3]  # repo root approx
-    dockerfile = root / "docker" / "evaluator" / "Dockerfile"
+    here = Path(__file__).resolve()
+    dockerfile = Path("docker/evaluator/Dockerfile")
+    for p in here.parents:
+        candidate = p / "docker" / "evaluator" / "Dockerfile"
+        if candidate.exists():
+            dockerfile = candidate
+            break
     if not dockerfile.exists():
         # try monorepo root relative
         dockerfile = Path("docker/evaluator/Dockerfile")

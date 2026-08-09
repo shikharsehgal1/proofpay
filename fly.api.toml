@@ -1,0 +1,44 @@
+# Deploy from repo root:
+#   fly deploy -c fly.api.toml --app proofpay-api
+app = "proofpay-api"
+primary_region = "ord"
+
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
+[env]
+  APP_ENV = "production"
+  PORT = "8000"
+  EVALUATOR_DOCKER_ENABLED = "false"
+  GROK_BUILD_ENABLED = "true"
+  WORKSPACES_DIR = "/data/workspaces"
+  ARTIFACTS_DIR = "/data/artifacts"
+  DEMO_SEARCH_PATH = "/app/demo-search"
+  DEMO_BOUNTY_PATH = "/app/demo-bounty"
+  APP_BASE_URL = "https://proofpay-web.fly.dev"
+  API_BASE_URL = "https://proofpay-api.fly.dev"
+  CORS_ORIGINS = "https://proofpay-web.fly.dev,http://localhost:3000"
+  X_OAUTH_CALLBACK_URL = "https://proofpay-web.fly.dev/api/auth/x/callback"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/health"
+
+[mounts]
+  source = "proofpay_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "2048mb"
+  cpu_kind = "shared"
+  cpus = 2

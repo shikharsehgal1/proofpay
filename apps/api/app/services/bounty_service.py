@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,15 +128,91 @@ async def compile_contract(db: AsyncSession, bounty: Bounty) -> Bounty:
 
 def _demo_contract_overlay(contract: dict[str, Any], bounty: Bounty) -> dict[str, Any]:
     """
-    Ensure demo-bounty has deterministic runnable commands.
+    Deterministic runnable contracts for demo seeds.
     Still data-driven; does not hardcode winners.
     """
     settings = get_settings()
-    eval_assets = str((Path(settings.workspaces_dir).parent / "demo-bounty" / "eval_assets").resolve())
-    # Use paths that work both local and docker-mounted
+    repo = bounty.repository_url or ""
+    root = Path(settings.workspaces_dir).resolve().parent
+    if "demo-search" in repo or "searchlab" in repo:
+        for candidate in (
+            Path(os.environ["DEMO_SEARCH_PATH"]) / "eval_assets" if os.environ.get("DEMO_SEARCH_PATH") else None,
+            Path("/app/demo-search/eval_assets"),
+            root / "demo-search" / "eval_assets",
+            Path(repo) / "eval_assets",
+            Path(repo.replace("file://", "")) / "eval_assets",
+        ):
+            if candidate and candidate.exists():
+                eval_assets = str(candidate.resolve())
+                break
+        else:
+            eval_assets = str((root / "demo-search" / "eval_assets").resolve())
+        contract["repository_url"] = bounty.repository_url
+        contract["baseline_ref"] = bounty.baseline_ref
+        contract["summary"] = contract.get("summary") or (
+            "Beat Grok on a multi-objective search ranker: maximize NDCG@10 + MRR while "
+            "keeping p95 latency low. Composite score is the sole ranking metric."
+        )
+        contract["target_description"] = (
+            "Implement searchlab.ranker.rank(query, documents) -> list[doc_id] ordered best-first. "
+            "Corpus documents have title, body, tags. Optimize quality vs latency tradeoff."
+        )
+        contract["build_command"] = "python3 -m pip install pytest -q || true"
+        contract["visible_tests"] = [
+            {
+                "name": "visible_api_and_ordering",
+                "command": "PYTHONPATH=. python3 -m pytest -q tests/visible",
+                "hidden": False,
+            }
+        ]
+        contract["hidden_tests"] = [
+            {
+                "name": "hidden_ranking_quality",
+                "command": f"PYTHONPATH=. python3 -m pytest -q {eval_assets}/hidden",
+                "hidden": True,
+            }
+        ]
+        contract["benchmark"] = {
+            "name": "composite_ranking_score",
+            "command": "PYTHONPATH=. python3 bench/bench.py --json",
+            "metric_key": "composite_score",
+            "higher_is_better": True,
+            "formula": "100*(0.7*NDCG@10 + 0.3*MRR) - 5.0*log10(1+p95_ms)",
+            "reported_metrics": ["composite_score", "ndcg_at_10", "mrr", "p95_ms", "mean_ms"],
+            "min_improvement_pct": 0.5,
+            "min_improvement_over_grok_pct": 0.3,
+            "warmup_runs": 1,
+            "measured_runs": 5,
+        }
+        contract["integrity"] = {
+            "protected_paths": ["eval/", "eval_assets/", "tests/hidden"],
+            "forbid_env_checks": True,
+            "forbid_benchmark_hardcoding": True,
+            "require_semantic_equivalence": True,
+        }
+        contract["acceptance_criteria"] = [
+            "All visible API/ordering tests pass",
+            "Hidden ranking quality: avg NDCG@10 ≥ 0.65 on holdout queries + top-1 relevant",
+            "Primary metric composite_score = 100*(0.7*NDCG@10 + 0.3*MRR) - 5.0*log10(1+p95_ms) (higher better)",
+            "Beat frozen Grok Baseline V0 composite by ≥0.3% (same sandbox pipeline)",
+            "No integrity violations: env probes, hardcoded public QRELS, protected-path edits",
+            "Improvement must reproduce in a fresh sandbox clone",
+        ]
+        contract["evaluation_plan"] = [
+            "Clone seed + candidate at pinned SHAs into isolated workspaces",
+            "Run visible pytest suite on candidate",
+            "Mount protected eval_assets and run hidden graded-relevance tests",
+            "Benchmark seed + candidate: emit NDCG@10, MRR, p95_ms, composite_score JSON",
+            "Static integrity scan for gaming patterns",
+            "Fresh-sandbox reproduction of candidate benchmark",
+            "Build eval vector; compare challengers vs frozen Grok vector",
+        ]
+        return contract
+
+    # Default: RankLab latency bounty
+    eval_assets = str((root / "demo-bounty" / "eval_assets").resolve())
     contract["repository_url"] = bounty.repository_url
     contract["baseline_ref"] = bounty.baseline_ref
-    # Use PYTHONPATH isolation (no shared site-packages) so baseline/candidate never collide.
     contract["build_command"] = "python3 -m pip install pytest -q || true"
     contract["visible_tests"] = [
         {
@@ -156,8 +233,8 @@ def _demo_contract_overlay(contract: dict[str, Any], bounty: Bounty) -> dict[str
         "command": "PYTHONPATH=. python3 bench/bench.py --json",
         "metric_key": "p95_ms",
         "higher_is_better": False,
-        "min_improvement_pct": 25.0,  # vs seed
-        "min_improvement_over_grok_pct": 5.0,  # material beat-Grok threshold
+        "min_improvement_pct": 25.0,
+        "min_improvement_over_grok_pct": 5.0,
         "warmup_runs": 1,
         "measured_runs": 7,
     }
@@ -272,11 +349,13 @@ async def generate_and_freeze_grok_baseline(db: AsyncSession, bounty: Bounty) ->
         raise FileNotFoundError(f"Seed repository not found: {seed}")
 
     out_root = Path(settings.workspaces_dir) / str(bounty.id) / "grok_generation"
+    # Prefer CLI locally; on Fly/containers CLI is usually absent → xAI API first.
+    prefer_cli = not Path("/app/demo-search").exists()
     gen = await generate_optimize_baseline(
         seed_path=seed,
         out_root=out_root,
         natural_language=bounty.natural_language,
-        prefer_cli=True,
+        prefer_cli=prefer_cli,
     )
     if not gen.ok:
         bounty.status = BountyStatus.FAILED

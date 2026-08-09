@@ -1,0 +1,25 @@
+app = "proofpay-web"
+primary_region = "ord"
+
+[build]
+  # Deploy from apps/web:
+  #   cd apps/web && fly deploy
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  # Public API URL — set at deploy time / secrets
+  NEXT_PUBLIC_API_BASE_URL = "https://proofpay-api.fly.dev"
+  API_INTERNAL_URL = "https://proofpay-api.fly.dev"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

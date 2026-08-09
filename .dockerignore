@@ -1,0 +1,15 @@
+**/.venv
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/workspaces
+**/artifacts
+**/*.pyc
+.git
+.env
+apps/web/node_modules
+apps/web/.next
+apps/api/.venv
+workspaces
+artifacts

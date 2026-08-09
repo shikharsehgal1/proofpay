@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, Bounty, User } from "@/lib/api";
 
-const DEFAULT_NL = `Make rank() at least 25% faster (p95) without reducing correctness or changing the evaluation. Do not weaken tests. Submit a GitHub branch or PR.`;
+const DEFAULT_NL = `Implement a high-quality production search ranker in searchlab.ranker.rank(query, documents) -> list[doc_ids]. Maximize composite_score = 100*(0.7*NDCG@10 + 0.3*MRR) - 5.0*log10(1 + p95_latency_ms). Corpus has title/body/tags. Hidden holdout queries test generalization. No hardcoding, no env detection. Beat Grok's frozen baseline on the same sandbox pipeline.`;
 
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
-  const [title, setTitle] = useState("Speed up ranklab.rank by ≥25%");
+  const [title, setTitle] = useState("Beat Grok: Complex Multi-Metric Search Ranking");
   const [nl, setNl] = useState(DEFAULT_NL);
   const [repo, setRepo] = useState("");
   const [reward, setReward] = useState(100);
@@ -25,13 +25,15 @@ export default function DashboardPage() {
       .then(setUser)
       .catch(() => setUser(null));
     api.listBounties().then(setMine).catch(() => setMine([]));
-    // default local demo path absolute
-    setRepo(`${window.location.origin.includes("localhost") ? "" : ""}${detectDemoRepo()}`);
+    setRepo(detectDemoRepo());
   }, []);
 
   function detectDemoRepo() {
-    // Prefer absolute path for local evaluation of demo-bounty
-    return process.env.NEXT_PUBLIC_DEMO_REPO || "/Users/shikharsehgal/grokathon/demo-bounty";
+    // Prefer SearchLab multi-metric seed; Fly image path falls back via API DEMO_SEARCH_PATH
+    return (
+      process.env.NEXT_PUBLIC_DEMO_REPO ||
+      "/Users/shikharsehgal/grokathon/demo-search"
+    );
   }
 
   async function create() {

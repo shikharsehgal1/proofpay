@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -50,9 +51,26 @@ async def run_evaluation_job(db: AsyncSession, submission_id: UUID) -> Evaluatio
 
     settings = get_settings()
     contract = bounty.contract_json or {}
-    eval_assets = Path("demo-bounty/eval_assets")
-    if not eval_assets.exists():
-        eval_assets = Path(__file__).resolve().parents[4] / "demo-bounty" / "eval_assets"
+    # Pick eval assets by seed/repo type (searchlab multi-metric vs ranklab latency)
+    seed_hint = (bounty.seed_repository_url or bounty.repository_url or "").lower()
+    here = Path(__file__).resolve()
+    # Safe parents walk (Fly image is /app/app/services/... — only 3 levels up to /)
+    parent_roots = list(here.parents)
+    if "demo-search" in seed_hint or "searchlab" in seed_hint or "search" in (bounty.title or "").lower():
+        candidates = [
+            Path(os.environ["DEMO_SEARCH_PATH"]) / "eval_assets" if os.environ.get("DEMO_SEARCH_PATH") else None,
+            Path("/app/demo-search/eval_assets"),
+            Path("demo-search/eval_assets"),
+            *[p / "demo-search" / "eval_assets" for p in parent_roots[:6]],
+        ]
+    else:
+        candidates = [
+            Path(os.environ["DEMO_BOUNTY_PATH"]) / "eval_assets" if os.environ.get("DEMO_BOUNTY_PATH") else None,
+            Path("/app/demo-bounty/eval_assets"),
+            Path("demo-bounty/eval_assets"),
+            *[p / "demo-bounty" / "eval_assets" for p in parent_roots[:6]],
+        ]
+    eval_assets = next((p for p in candidates if p and p.exists()), Path("demo-bounty/eval_assets"))
 
     # Seed repo for absolute metrics (not Grok's frozen tree).
     # Grok and humans both evaluate against the same seed when present.
@@ -279,12 +297,29 @@ async def _evaluate_local_paths(bounty, sub, contract, eval_assets):
     bm = parse_bench_json(br.stdout) if br.exit_code == 0 else {}
     cm = parse_bench_json(cr.stdout) if cr.exit_code == 0 else {}
     rm = parse_bench_json(rr.stdout) if rr.exit_code == 0 else {}
-    key = (contract.get("benchmark") or {}).get("metric_key") or "p95_ms"
-    base_lat = float(bm.get(key) or 0)
-    cand_lat = float(cm.get(key) or 0)
-    repro_lat = float(rm.get(key) or 0)
-    imp = ((base_lat - cand_lat) / base_lat * 100.0) if base_lat and cand_lat else None
-    repro_imp = ((base_lat - repro_lat) / base_lat * 100.0) if base_lat and repro_lat else None
+    bench = contract.get("benchmark") or {}
+    key = bench.get("metric_key") or "p95_ms"
+    higher = bool(bench.get("higher_is_better") or key == "composite_score")
+    base_primary = float(bm.get(key) or 0)
+    cand_primary = float(cm.get(key) or 0)
+    repro_primary = float(rm.get(key) or 0)
+    if base_primary and cand_primary:
+        if higher:
+            imp = ((cand_primary - base_primary) / abs(base_primary)) * 100.0
+        else:
+            imp = ((base_primary - cand_primary) / base_primary) * 100.0
+    else:
+        imp = None
+    if base_primary and repro_primary:
+        if higher:
+            repro_imp = ((repro_primary - base_primary) / abs(base_primary)) * 100.0
+        else:
+            repro_imp = ((base_primary - repro_primary) / base_primary) * 100.0
+    else:
+        repro_imp = None
+    cand_p95 = float(cm.get("p95_ms") or cm.get("latency_ms") or (cand_primary if not higher else 0) or 0)
+    base_p95 = float(bm.get("p95_ms") or bm.get("latency_ms") or (base_primary if not higher else 0) or 0)
+    repro_p95 = float(rm.get("p95_ms") or rm.get("latency_ms") or (repro_primary if not higher else 0) or 0)
     integrity = static_integrity_scan(
         candidate_dir,
         (contract.get("integrity") or {}).get("protected_paths") or ["eval/"],
@@ -294,16 +329,19 @@ async def _evaluate_local_paths(bounty, sub, contract, eval_assets):
         "visible_tests_total": vis_t,
         "hidden_tests_passed": hid_p,
         "hidden_tests_total": hid_t,
-        "baseline_latency_ms": base_lat or None,
-        "candidate_latency_ms": cand_lat or None,
+        "baseline_latency_ms": base_p95 or None,
+        "candidate_latency_ms": cand_p95 or None,
         "improvement_pct": imp,
-        "reproduction_latency_ms": repro_lat or None,
+        "reproduction_latency_ms": repro_p95 or None,
         "reproduction_improvement_pct": repro_imp,
         "integrity_ok": integrity["ok"],
         "integrity_findings": integrity,
         "baseline_metrics": bm,
         "candidate_metrics": cm,
         "repro_metrics": rm,
+        "primary_metric_key": key,
+        "primary_seed": base_primary or None,
+        "primary_candidate": cand_primary or None,
     }
     events.append({"type": "benchmark", "baseline": bm, "candidate": cm, "improvement_pct": imp})
     events.append({"type": "integrity", **integrity})
@@ -347,6 +385,29 @@ def _eligibility(
     return True, "eligible"
 
 
+def _primary_score(s: Submission, higher_is_better: bool) -> float:
+    """Extract primary ranking score from eval vector / raw metrics."""
+    ev = s.evaluation
+    if not ev:
+        return -1e18 if higher_is_better else 1e18
+    vec = ev.eval_vector or {}
+    perf = vec.get("performance") if isinstance(vec, dict) else None
+    if isinstance(perf, dict):
+        if perf.get("composite_score") is not None:
+            return float(perf["composite_score"])
+        if perf.get("primary_score") is not None:
+            return float(perf["primary_score"])
+    raw = ev.raw_results or {}
+    cm = raw.get("candidate_metrics") or {}
+    if cm.get("composite_score") is not None:
+        return float(cm["composite_score"])
+    if higher_is_better:
+        return float(ev.improvement_pct or -1e9)
+    # classic latency: lower is better → invert for sort
+    lat = ev.candidate_latency_ms
+    return -float(lat) if lat is not None else -1e18
+
+
 async def recompute_ranking(db: AsyncSession, bounty_id: UUID) -> None:
     """Rank by real metrics among eligible completed submissions. No username shortcuts."""
     r = await db.execute(
@@ -355,44 +416,37 @@ async def recompute_ranking(db: AsyncSession, bounty_id: UUID) -> None:
         .where(Submission.bounty_id == bounty_id)
     )
     subs = list(r.scalars().all())
+    bounty = await db.get(Bounty, bounty_id)
+    contract = (bounty.contract_json or {}) if bounty else {}
+    bench = contract.get("benchmark") or {}
+    higher = bool(bench.get("higher_is_better") or bench.get("metric_key") == "composite_score")
+
     eligible = []
     for s in subs:
         if s.status != SubmissionStatus.COMPLETED or not s.evaluation:
             s.rank = None
             continue
-        # In Beat-Grok mode, Grok baseline ranks as champion until beaten
         eligible.append(s)
-    # Prefer lower latency (performance), then higher improvement vs seed
-    eligible.sort(
-        key=lambda s: (
-            s.evaluation.candidate_latency_ms if s.evaluation.candidate_latency_ms is not None else 1e18,
-            -(s.evaluation.improvement_pct or -1e9),
-        )
-    )
+
+    # Higher primary score first (composite) or inverted latency
+    eligible.sort(key=lambda s: _primary_score(s, higher), reverse=True)
     for i, s in enumerate(eligible, start=1):
         s.rank = i
-    bounty = await db.get(Bounty, bounty_id)
+
     if bounty and eligible:
         humans_who_beat = [
             s
             for s in eligible
             if s.source_type != SubmissionSource.GROK_BASELINE and s.beats_grok is True
         ]
+        bounty.status = BountyStatus.RANKED
         if bounty.baseline_type == BaselineType.GROK_GENERATED and not humans_who_beat:
-            # only Grok completed / no human beat
-            bounty.status = BountyStatus.RANKED
             grok = next((s for s in eligible if s.source_type == SubmissionSource.GROK_BASELINE), None)
             if grok:
                 bounty.champion_submission_id = grok.id
+        elif humans_who_beat:
+            humans_who_beat.sort(key=lambda s: _primary_score(s, higher), reverse=True)
+            bounty.champion_submission_id = humans_who_beat[0].id
         else:
-            bounty.status = BountyStatus.RANKED
-            if humans_who_beat:
-                humans_who_beat.sort(
-                    key=lambda s: s.evaluation.candidate_latency_ms
-                    if s.evaluation and s.evaluation.candidate_latency_ms is not None
-                    else 1e18
-                )
-                bounty.champion_submission_id = humans_who_beat[0].id
-            elif eligible:
-                bounty.champion_submission_id = eligible[0].id
+            bounty.champion_submission_id = eligible[0].id
     await db.commit()
