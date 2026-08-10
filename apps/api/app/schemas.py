@@ -226,3 +226,4 @@ class IntegrationStatus(BaseModel):
     github: dict[str, Any]
     evaluator: dict[str, Any]
     x_money: dict[str, Any]
+    reply_app_bot: dict[str, Any] = Field(default_factory=dict)

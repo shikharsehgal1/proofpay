@@ -85,8 +85,12 @@ async def x_events(
 
 
 async def _process_payload(payload: dict[str, Any]) -> None:
-    """Extract posts/replies and attach to matching bounties."""
+    """Extract posts/replies → ProofPay bounties and/or Reply App Bot mentions."""
     posts = _extract_posts(payload)
+    settings = get_settings()
+    bot_user = (settings.reply_app_bot_x_username or "").lower().lstrip("@")
+    bot_id = settings.reply_app_bot_x_user_id
+
     async with SessionLocal() as db:
         for post in posts:
             text = post.get("text") or ""
@@ -96,6 +100,30 @@ async def _process_payload(payload: dict[str, Any]) -> None:
             conversation_id = str(post.get("conversation_id") or "")
             referenced = post.get("referenced_tweets") or []
             parent_ids = [str(r.get("id")) for r in referenced if r.get("type") in ("replied_to", "quote")]
+
+            # ── Reply App Bot: @mention of dedicated bot account ──
+            text_l = text.lower()
+            is_bot_mention = bool(bot_user and f"@{bot_user}" in text_l)
+            if settings.reply_app_bot_enabled and is_bot_mention and author_id != bot_id:
+                try:
+                    from app.models import ReplyAppJobSource, ReplyAppJobStatus
+                    from app.services.reply_app.pipeline import create_job, run_job
+
+                    parent = parent_ids[0] if parent_ids else post_id
+                    job = await create_job(
+                        db,
+                        source=ReplyAppJobSource.MENTION,
+                        source_tweet_id=parent,
+                        source_tweet_text=text,
+                        source_author_id=author_id or None,
+                        source_author_username=username,
+                        conversation_id=conversation_id or parent,
+                        mention_tweet_id=post_id,
+                        status=ReplyAppJobStatus.QUEUED,
+                    )
+                    await run_job(db, job.id, post_reply=True)
+                except Exception:
+                    pass  # bounty path may still apply
 
             if not extract_github_urls(text):
                 continue

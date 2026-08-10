@@ -94,19 +94,72 @@ async def search_conversation_replies(
     Requires search access on the app tier — will raise XAPIError if unavailable.
     """
     query = f"conversation_id:{conversation_id} -is:retweet"
-    params = {
+    return await search_recent(query, max_results=max_results, access_token=access_token)
+
+
+async def search_recent(
+    query: str,
+    *,
+    max_results: int = 50,
+    access_token: Optional[str] = None,
+    bearer: Optional[str] = None,
+    next_token: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    X recent search (last ~7 days depending on tier).
+    Real API — raises XAPIError if the app lacks search access.
+    """
+    params: dict[str, str] = {
         "query": query,
         "max_results": str(min(max(10, max_results), 100)),
-        "tweet.fields": "author_id,conversation_id,created_at,text,in_reply_to_user_id,referenced_tweets",
+        "tweet.fields": "author_id,conversation_id,created_at,text,in_reply_to_user_id,referenced_tweets,public_metrics",
         "expansions": "author_id",
-        "user.fields": "username,name,profile_image_url",
+        "user.fields": "username,name,profile_image_url,public_metrics",
     }
+    if next_token:
+        params["next_token"] = next_token
     return await _request(
         "GET",
         "/tweets/search/recent",
         access_token=access_token,
+        bearer=bearer,
         params=params,
     )
+
+
+async def get_user_mentions(
+    user_id: str,
+    *,
+    access_token: str,
+    max_results: int = 25,
+    since_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Mentions timeline for the bot user.
+    Requires user OAuth token for that user_id.
+    """
+    params: dict[str, str] = {
+        "max_results": str(min(max(5, max_results), 100)),
+        "tweet.fields": "author_id,conversation_id,created_at,text,in_reply_to_user_id,referenced_tweets",
+        "expansions": "author_id,referenced_tweets.id",
+        "user.fields": "username,name,profile_image_url",
+    }
+    if since_id:
+        params["since_id"] = since_id
+    return await _request(
+        "GET",
+        f"/users/{user_id}/mentions",
+        access_token=access_token,
+        params=params,
+    )
+
+
+async def get_referenced_parent_id(tweet: dict[str, Any]) -> Optional[str]:
+    """Best-effort parent tweet id for reply-to threading."""
+    for ref in tweet.get("referenced_tweets") or []:
+        if ref.get("type") in ("replied_to", "quote") and ref.get("id"):
+            return str(ref["id"])
+    return None
 
 
 async def upload_media_simple(

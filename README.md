@@ -10,6 +10,28 @@ See [`INTEGRATION_MATRIX.md`](./INTEGRATION_MATRIX.md) for verified capability s
 
 ---
 
+## Grok Reply App Bot (sibling surface)
+
+Dedicated X bot account (not your personal OAuth). When mentioned, Grok generates a **self-contained mini-app** and replies under the tweet with a live link (`/a/{slug}`).
+
+```bash
+# Status (no secrets)
+curl $API/api/reply-app/status
+
+# Dry-run generation (needs XAI_API_KEY only)
+curl -X POST $API/api/reply-app/dry-run \
+  -H 'content-type: application/json' \
+  -d '{"text":"@bot make a split-the-bill tip calculator"}'
+
+# Scan recent tweets from watchlist (drafts by default — no auto-reply)
+curl -X POST $API/api/reply-app/scan-opportunities \
+  -H 'content-type: application/json' -d '{}'
+```
+
+Wire the new bot account later via `REPLY_APP_BOT_*` env vars. Full architecture: [`docs/REPLY_APP_BOT.md`](./docs/REPLY_APP_BOT.md).
+
+---
+
 ## Beat Grok (primary mode)
 
 ```text
@@ -31,8 +53,10 @@ Classic **optimize** mode (user-provided seed, no Grok baseline) still works.
 | `apps/web` | Next.js UI |
 | `apps/api` | FastAPI, SQLAlchemy, real xAI + X clients + Grok Build CLI |
 | `demo-bounty` | RankLab seed + Alice / Bob / Charlie challengers |
+| `demo-search` | Multi-metric SearchLab Beat-Grok seed |
 | `docker/evaluator` | Isolated Python eval image |
 | Postgres + Redis | Persistent state + optional job queue |
+| **Reply App Bot** | `@mention` → Grok mini-app → reply under tweet ([docs/REPLY_APP_BOT.md](./docs/REPLY_APP_BOT.md)) |
 
 **No hardcoded winners.** Alice/Bob/Charlie exercise the same pipeline as production submissions.
 

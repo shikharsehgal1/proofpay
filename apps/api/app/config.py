@@ -52,6 +52,27 @@ class Settings(BaseSettings):
     grok_cli_path: str = "grok"
     grok_build_enabled: bool = False
 
+    # ─── Grok Reply App Bot (dedicated X account — not creator OAuth) ───
+    reply_app_bot_enabled: bool = False
+    reply_app_bot_x_user_id: str = ""
+    reply_app_bot_x_username: str = ""
+    reply_app_bot_access_token: str = ""
+    reply_app_bot_refresh_token: str = ""
+    reply_app_attach_preview_image: bool = True
+    reply_app_max_jobs_per_hour: int = 30
+    reply_app_reply_template: str = "Built you a quick app for this → {url}"
+    # Opportunity scanner
+    reply_app_scan_enabled: bool = True
+    reply_app_scan_auto_reply: bool = False  # drafts only until explicitly enabled
+    reply_app_scan_min_score: float = 0.72
+    reply_app_scan_max_tweets: int = 40
+    reply_app_scan_hours: int = 24
+    # Comma-separated usernames (no @). Starter watchlist for high-signal builder/product tweets.
+    reply_app_scan_accounts: str = (
+        "paulg,levelsio,swyx,jason,naval,pmarca,dhh,marc_louvion,"
+        "steipete,dannyroberts,t3dotgg,shadcn,vercel,linear"
+    )
+
     @property
     def cors_origin_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -71,6 +92,22 @@ class Settings(BaseSettings):
     @property
     def x_app_configured(self) -> bool:
         return bool(self.x_bearer_token or (self.x_api_key and self.x_api_secret))
+
+    @property
+    def reply_app_bot_configured(self) -> bool:
+        return bool(
+            self.reply_app_bot_enabled
+            and self.reply_app_bot_access_token
+            and self.reply_app_bot_x_user_id
+        )
+
+    @property
+    def reply_app_scan_account_list(self) -> List[str]:
+        return [
+            a.strip().lstrip("@")
+            for a in self.reply_app_scan_accounts.split(",")
+            if a.strip()
+        ]
 
 
 @lru_cache

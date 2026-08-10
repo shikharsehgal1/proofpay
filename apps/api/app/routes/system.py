@@ -69,4 +69,14 @@ async def integrations():
             ),
             "product_state": "VERIFIED / READY_FOR_SETTLEMENT without automated payout",
         },
+        reply_app_bot={
+            "enabled": s.reply_app_bot_enabled,
+            "configured": s.reply_app_bot_configured,
+            "username": s.reply_app_bot_x_username or None,
+            "scan_enabled": s.reply_app_scan_enabled,
+            "scan_auto_reply": s.reply_app_scan_auto_reply,
+            "watchlist_size": len(s.reply_app_scan_account_list),
+            "docs": "docs/REPLY_APP_BOT.md",
+            "status_endpoint": "/api/reply-app/status",
+        },
     )

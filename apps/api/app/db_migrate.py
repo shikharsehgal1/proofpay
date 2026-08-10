@@ -44,6 +44,14 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         """DO $$ BEGIN
             ALTER TYPE bounty_status ADD VALUE IF NOT EXISTS 'grok_champion';
         EXCEPTION WHEN others THEN null; END $$;""",
+        # Reply App Bot enums + tables are created via Base.metadata.create_all;
+        # keep lightweight column guards if tables already exist from partial deploys.
+        """DO $$ BEGIN
+            CREATE TYPE reply_app_job_source AS ENUM ('mention','opportunity','manual','dry_run');
+        EXCEPTION WHEN duplicate_object THEN null; END $$;""",
+        """DO $$ BEGIN
+            CREATE TYPE reply_app_job_status AS ENUM ('draft','queued','running','generated','replied','skipped','failed');
+        EXCEPTION WHEN duplicate_object THEN null; END $$;""",
     ]
     async with engine.begin() as conn:
         for stmt in statements:
